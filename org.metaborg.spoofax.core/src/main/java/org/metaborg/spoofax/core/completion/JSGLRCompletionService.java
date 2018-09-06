@@ -95,6 +95,9 @@ public class JSGLRCompletionService implements ISpoofaxCompletionService {
         }
 
         Collection<ICompletion> completions = Lists.newLinkedList();
+        
+        // Add test completion
+        completions.add(new Completion("TESTSTE", "", "TEXT", "Additional info", 0, 4, CompletionKind.expansion));
 
         // Completion in case of empty input
         String inputText = parseInput.input().text();
