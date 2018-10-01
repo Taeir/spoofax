@@ -6,6 +6,8 @@ import java.util.Map;
 
 import javax.annotation.Nullable;
 
+import mb.nabl2.scopegraph.terms.Scope;
+import mb.nabl2.terms.ITerm;
 import org.apache.commons.vfs2.FileObject;
 import org.metaborg.core.MetaborgException;
 import org.metaborg.core.completion.Completion;
@@ -59,6 +61,8 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
 import com.google.inject.Inject;
 
+import static mb.nabl2.terms.build.TermBuild.B;
+
 public class JSGLRCompletionService implements ISpoofaxCompletionService {
     private static final Logger logger = LoggerFactory.getLogger(JSGLRCompletionService.class);
 
@@ -84,15 +88,6 @@ public class JSGLRCompletionService implements ISpoofaxCompletionService {
 
     @Override public Iterable<ICompletion> get(int position, ISpoofaxParseUnit parseInput, boolean nested)
         throws MetaborgException {
-        ISpoofaxParseUnit completionParseResult = null;
-
-        if(!nested && !parseInput.success()) {
-            final JSGLRParserConfiguration config = new JSGLRParserConfiguration(true, true, true, 3000, position);
-            final ISpoofaxInputUnit input = parseInput.input();
-            final ISpoofaxInputUnit modifiedInput =
-                unitService.inputUnit(input.source(), input.text(), input.langImpl(), input.dialect(), config);
-            completionParseResult = syntaxService.parse(modifiedInput);
-        }
 
         Collection<ICompletion> completions = Lists.newLinkedList();
 
@@ -106,30 +101,36 @@ public class JSGLRCompletionService implements ISpoofaxCompletionService {
             
             return completions;
         }
-
+        
+        ISpoofaxParseUnit completionParseResult = null;
+        if(!parseInput.success() && !nested) {
+        	// When parsing failed, and we are not in a nested scope,
+        	// reparse, with recovery and completions enabled.
+            final JSGLRParserConfiguration config = new JSGLRParserConfiguration(true, true, true, 3000, position);
+            final ISpoofaxInputUnit input = parseInput.input();
+            final ISpoofaxInputUnit modifiedInput =
+                unitService.inputUnit(input.source(), input.text(), input.langImpl(), input.dialect(), config);
+            completionParseResult = syntaxService.parse(modifiedInput);
+        }
 
         if(completionParseResult != null && completionParseResult.ast() == null) {
             return completions;
         }
-
+        
         Collection<IStrategoTerm> nestedCompletionTerms = getNestedCompletionTermsFromAST(completionParseResult);
+        if(!nestedCompletionTerms.isEmpty()) {
+            completions.addAll(completionErroneousProgramsNested(position, nestedCompletionTerms, completionParseResult));
+        }
+        
         Collection<IStrategoTerm> completionTerms = getCompletionTermsFromAST(completionParseResult);
-
-        boolean blankLineCompletion = isCompletionBlankLine(position, parseInput.input().text());
-
         if(!completionTerms.isEmpty()) {
             completions.addAll(completionErroneousPrograms(position, completionTerms, completionParseResult));
         }
 
-        if(!nestedCompletionTerms.isEmpty()) {
-            completions
-                .addAll(completionErroneousProgramsNested(position, nestedCompletionTerms, completionParseResult));
-        }
-
         if(completionTerms.isEmpty() && nestedCompletionTerms.isEmpty()) {
+        	boolean blankLineCompletion = isCompletionBlankLine(position, parseInput.input().text());
             completions.addAll(completionCorrectPrograms(position, blankLineCompletion, parseInput));
         }
-
 
         return completions;
 
