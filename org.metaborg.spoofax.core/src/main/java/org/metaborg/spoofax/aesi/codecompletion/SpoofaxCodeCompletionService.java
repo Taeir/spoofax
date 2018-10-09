@@ -168,7 +168,7 @@ public class SpoofaxCodeCompletionService implements ISpoofaxCodeCompletionServi
     /**
      * Gathers the code completion proposals.
      *
-     * @param parseResult The parse result; or null.
+     * @param parseResult The parse result.
      * @param analysisResult The analysis result; or null.
      * @param offset The zero-based character offset in the source unit.
      * @param prefix The prefix; or an empty string.
@@ -176,7 +176,7 @@ public class SpoofaxCodeCompletionService implements ISpoofaxCodeCompletionServi
      * @return A list of code completion proposals.
      */
     private ArrayList<SpoofaxCodeCompletionProposal> gatherProposals(
-            @Nullable ISpoofaxParseUnit parseResult,
+            ISpoofaxParseUnit parseResult,
             @Nullable ISpoofaxAnalyzeUnit analysisResult,
             int offset,
             SourceToken prefix,

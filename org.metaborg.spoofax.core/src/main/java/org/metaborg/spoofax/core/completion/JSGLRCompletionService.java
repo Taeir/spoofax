@@ -1,13 +1,24 @@
 package org.metaborg.spoofax.core.completion;
 
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 
 import javax.annotation.Nullable;
 
+import mb.nabl2.constraints.Constraints;
+import mb.nabl2.constraints.IConstraint;
+import mb.nabl2.constraints.ast.AstProperties;
+import mb.nabl2.scopegraph.terms.Occurrence;
 import mb.nabl2.scopegraph.terms.Scope;
+import mb.nabl2.solver.ISolution;
+import mb.nabl2.solver.SolverException;
+import mb.nabl2.solver.messages.Messages;
+import mb.nabl2.solver.solvers.CallExternal;
+import mb.nabl2.solver.solvers.CompletionSolver;
+import mb.nabl2.spoofax.analysis.IResult;
+import mb.nabl2.stratego.*;
 import mb.nabl2.terms.ITerm;
+import mb.nabl2.terms.matching.Transform;
+import mb.nabl2.terms.unification.IUnifier;
 import org.apache.commons.vfs2.FileObject;
 import org.metaborg.core.MetaborgException;
 import org.metaborg.core.completion.Completion;
@@ -20,6 +31,8 @@ import org.metaborg.core.source.ISourceLocation;
 import org.metaborg.core.source.ISourceRegion;
 import org.metaborg.core.source.SourceLocation;
 import org.metaborg.core.source.SourceRegion;
+import org.metaborg.spoofax.aesi.codecompletion.SpoofaxCodeCompletionProposal;
+import org.metaborg.spoofax.core.context.constraint.IConstraintContext;
 import org.metaborg.spoofax.core.stratego.IStrategoCommon;
 import org.metaborg.spoofax.core.stratego.IStrategoRuntimeService;
 import org.metaborg.spoofax.core.syntax.ISpoofaxSyntaxService;
@@ -28,10 +41,14 @@ import org.metaborg.spoofax.core.syntax.JSGLRSourceRegionFactory;
 import org.metaborg.spoofax.core.syntax.SourceAttachment;
 import org.metaborg.spoofax.core.syntax.SyntaxFacet;
 import org.metaborg.spoofax.core.terms.ITermFactoryService;
+import org.metaborg.spoofax.core.unit.ISpoofaxAnalyzeUnit;
 import org.metaborg.spoofax.core.unit.ISpoofaxInputUnit;
 import org.metaborg.spoofax.core.unit.ISpoofaxParseUnit;
 import org.metaborg.spoofax.core.unit.ISpoofaxUnitService;
+import org.metaborg.util.functions.Function1;
 import org.metaborg.util.iterators.Iterables2;
+import org.metaborg.util.task.NullCancel;
+import org.metaborg.util.task.NullProgress;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.spoofax.interpreter.core.Tools;
@@ -129,7 +146,8 @@ public class JSGLRCompletionService implements ISpoofaxCompletionService {
 
         if(completionTerms.isEmpty() && nestedCompletionTerms.isEmpty()) {
         	boolean blankLineCompletion = isCompletionBlankLine(position, parseInput.input().text());
-            completions.addAll(completionCorrectPrograms(position, blankLineCompletion, parseInput));
+        	// TODO: Get analysis input
+            completions.addAll(completionCorrectPrograms(position, blankLineCompletion, parseInput, null));
         }
 
         return completions;
@@ -213,13 +231,20 @@ public class JSGLRCompletionService implements ISpoofaxCompletionService {
         return true;
     }
 
-    public Collection<ICompletion> completionCorrectPrograms(int position, boolean blankLineCompletion,
-        ISpoofaxParseUnit parseResult) throws MetaborgException {
+    public Collection<ICompletion> completionCorrectPrograms(
+            int position,
+            boolean blankLineCompletion,
+            @Nullable ISpoofaxParseUnit parseResult,
+            @Nullable ISpoofaxAnalyzeUnit analysisResult) throws MetaborgException {
+        if (analysisResult == null && parseResult == null)
+            return Collections.emptyList();
 
-        Collection<ICompletion> completions = Sets.newHashSet();
-        final FileObject location = parseResult.source();
-        final ILanguageImpl language = parseResult.input().langImpl();
+        final Collection<ICompletion> completions = Sets.newHashSet();
+        final FileObject location = analysisResult != null ? analysisResult.source() : parseResult.source();
+        final ISpoofaxInputUnit input = analysisResult != null ? analysisResult.input().input() : parseResult.input();
+        final ILanguageImpl language = input.langImpl();
         final String languageName = language.belongsTo().name();
+        final IStrategoTerm ast = analysisResult != null ? analysisResult.ast() : parseResult.ast();
 
         for(ILanguageComponent component : language.components()) {
 
@@ -231,7 +256,7 @@ public class JSGLRCompletionService implements ISpoofaxCompletionService {
             final Map<IStrategoTerm, Boolean> rightRecursiveTerms = new HashMap<IStrategoTerm, Boolean>();
 
             final Iterable<IStrategoTerm> terms =
-                tracingTermsCompletions(position, parseResult.ast(), new SourceRegion(position), runtime, termFactory,
+                tracingTermsCompletions(position, ast, new SourceRegion(position), runtime, termFactory,
                     languageName, leftRecursiveTerms, rightRecursiveTerms);
 
             final IStrategoAppl placeholder = getPlaceholder(position, terms);
@@ -241,7 +266,7 @@ public class JSGLRCompletionService implements ISpoofaxCompletionService {
             final Iterable<IStrategoTerm> rightRecursive = getRightRecursiveTerms(position, terms, rightRecursiveTerms);
 
             if(placeholder != null) {
-                completions.addAll(placeholderCompletions(placeholder, languageName, component, location));
+                completions.addAll(placeholderCompletions(placeholder, languageName, component, location, analysisResult));
             } else {
                 if(Iterables.size(lists) != 0) {
                     completions.addAll(
@@ -260,6 +285,201 @@ public class JSGLRCompletionService implements ISpoofaxCompletionService {
             }
         }
         return completions;
+    }
+
+    /**
+     *
+     * @param placeholder
+     * @param syntacticProposals A list of proposals in the form (name, text, additionalInfo, REPLACE_TERM(oldNode, newNode)).
+     * @param context
+     * @param termFactory
+     * @return
+     */
+    private Collection<ICompletion> semanticPlaceholderCompletions(IStrategoAppl placeholder, IStrategoTerm syntacticProposals, IConstraintContext context, ITermFactory termFactory) {
+        Collection<ICompletion> proposals = Sets.newHashSet();
+
+        // From the placeholder, the most specific element:
+        logger.debug("Semantic completing on placeholder: " + placeholder.toString());
+
+        StrategoTerms strategoTerms = new StrategoTerms(termFactory);
+        CompletionSolver solver = new CompletionSolver(CallExternal.never());
+
+        @Nullable TermIndex termIndex = getTermIndex(placeholder);
+        if (termIndex == null) return Collections.emptyList();
+        @Nullable IResult result = getAnalysisResult(termIndex, context);
+        if (result == null) return Collections.emptyList();
+
+        Function1<String, String> fresh = result.fresh().melt()::fresh;
+
+        // Get the term's [[ _ ^ args : type ]].
+        @Nullable ITerm args = result.solution().astProperties().getValue(termIndex, AstProperties.PARAMS_KEY).orElse(null);
+        @Nullable ITerm type = result.solution().astProperties().getValue(termIndex, AstProperties.TYPE_KEY).orElse(null);
+        if (args == null || type == null) return Collections.emptyList();
+
+        // Get the scopes from the args.
+        IUnifier unifier = result.solution().unifier();
+        Collection<Scope> scopes = Transform.T.collecttd(t -> Scope.matcher().match(t, unifier)).apply(args);
+
+        Set<Occurrence> occurrences = getOccurrencesInScopes(scopes, result.solution());
+        for (IStrategoTerm syntaxFragment : syntacticProposals) {
+            
+            List<ICompletion> fragmentProposals = findSemanticCompletionsForFragment(syntaxFragment, args, type, fresh, result, occurrences, strategoTerms, solver);
+            proposals.addAll(fragmentProposals);
+        }
+
+        return proposals;
+    }
+
+
+    /**
+     * Returns the term index for the specified Stratego term.
+     *
+     * @param term The Stratego term.
+     * @return The term index.
+     */
+    @Nullable private TermIndex getTermIndex(IStrategoTerm term) {
+        return StrategoTermIndices.get(term).orElse(null);
+    }
+
+    /**
+     * Gets the analysis result from the specified term.
+     *
+     * @param termIndex The term index.
+     * @param context The constraint context.
+     * @return The analysis result.
+     */
+    @Nullable private IResult getAnalysisResult(TermIndex termIndex, IConstraintContext context) {
+        String resource = termIndex.getResource();
+        IStrategoTerm analysisTerm = context.getAnalysis(resource);
+        return StrategoBlob.match(analysisTerm, IResult.class).orElse(null);
+    }
+
+    /**
+     * Finds the valid semantic completions of the specified syntactic fragment.
+     *
+     * @param syntaxFragment The syntax fragment.
+     * @param params The AST term 'params' property.
+     * @param type The AST term 'type' property.
+     * @param fresh The fresh name function.
+     * @param result The analysis result.
+     * @param occurrences The occurrences.
+     * @param strategoTerms The Stratego-Nabl term helper.
+     * @param solver The solver.
+     * @return The completion proposals.
+     */
+    private List<ICompletion> findSemanticCompletionsForFragment(IStrategoTerm syntaxFragment, ITerm params, ITerm type, Function1<String, String> fresh, IResult result, Set<Occurrence> occurrences, StrategoTerms strategoTerms, CompletionSolver solver) {
+        ArrayList<ICompletion> proposals = Lists.newArrayList();
+        for (Occurrence occurrence : occurrences) {
+            // Build the fragment.
+            IStrategoTerm fragment = buildFragment(syntaxFragment, occurrence, strategoTerms);
+
+            boolean isValid = isSemanticallyValidFragment(fragment, params, type, result, fresh, strategoTerms, solver);
+
+            if (isValid) {
+                // Build a completion from it.
+                ICompletion proposal = buildCompletionProposal(fragment);
+                proposals.add(proposal);
+            }
+        }
+
+        return proposals;
+    }
+
+    /**
+     * Builds a fragment from the specified syntax fragment and occurrence.
+     *
+     * @param syntaxFragment The syntax fragment.
+     * @param occurrence The occurrence.
+     * @return The built fragment with the name of the occurrence integrated into it; or null.
+     */
+    @Nullable private IStrategoTerm buildFragment(IStrategoTerm syntaxFragment, Occurrence occurrence, StrategoTerms strategoTerms) {
+        // Get the name of the occurrence.
+        ITerm nablName = occurrence.getName();
+        IStrategoTerm strategoName = strategoTerms.toStratego(nablName);
+
+//        // We can't do anything with placeholders.
+//        if (isPlaceholderTerm(syntaxFragment)) return null;
+//
+//        if(syntaxFragment instanceof IStrategoAppl && appl.getConstructor().getName().endsWith("-Plhdr")) return null;
+
+        // TODO
+        throw new IllegalStateException();
+    }
+
+    /**
+     * Determines whether the specified fragment is semantivally valid.
+     *
+     * @param fragment The fragment to test.
+     * @param result The original analysis result.
+     * @param fresh Function for fresh names.
+     * @return True when the fragment is semantically valid;
+     * otherwise, false.
+     */
+    private boolean isSemanticallyValidFragment(IStrategoTerm fragment, ITerm args, ITerm type, IResult result, Function1<String, String> fresh, StrategoTerms strategoTerms, CompletionSolver solver) {
+        // Create the constraint [[ fragment ^ args : type ]] or [[ fragment ^ args ]] (when there is NoType).
+        // args = Params(params) (in het geval van NoType()) of Params(params, type)
+        // constraintTerm =  nabl2--generate-constraint-completion Tuple(strategoName, fragment, args)
+        IStrategoTerm constraintTerm = null;
+        ITerm constraintStrategoTerm = strategoTerms.fromStratego(constraintTerm);
+        @Nullable IConstraint constraint = ConstraintTerms.specialize(Constraints.matcher()).match(constraintStrategoTerm).orElse(null);
+        if (constraint == null) return false;
+        List<IConstraint> completionConstraints = Collections.singletonList(constraint);
+
+        // Create a new solution with the new constraints added to it.
+        // We remove the messages from the solution so that we can see any errors resulting from adding the constraint.
+        ISolution oldSolution = result.solution();
+        oldSolution.withConstraints(completionConstraints).withMessages(Messages.Immutable.of());
+        ISolution newSolution = null;
+        try {
+            newSolution = solver.solve(oldSolution, fresh, new NullCancel(), new NullProgress());
+        } catch (SolverException | InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+
+        // If the solution does not contain any new errors,
+        // the fragment is semantically and syntactically valid and can be suggested as a completion
+        return newSolution.messages().getErrors().isEmpty();
+
+        // NOTE: This is not sound when using a scope graph across multiple files:
+        //
+        //      I
+        //     / \
+        //    U1 U2
+        //     \ /
+        //      F
+        //
+        // When a constraint is added to U2 (unit 2) in this situation,
+        // then F is not recomputed with the new constraint. It is possible that the new constraint
+        // changes the final whole-program analysis.
+    }
+
+    /**
+     * Builds a completion proposal from the specified fragment.
+     *
+     * @param fragment The fragment.
+     * @return The completion proposal.
+     */
+    private ICompletion buildCompletionProposal(IStrategoTerm fragment) {
+//        return createCompletionReplaceTerm(fragment.toString(), fragment.toString(), fragment.toString());
+        throw new IllegalStateException();
+//        return new Completion(fragment.toString());
+//        return new SpoofaxCodeCompletionProposal(fragment.toString(), null, null, null, null, null);
+    }
+
+    /**
+     * Gets the occurrences in the specified scopes.
+     *
+     * @param scopes The scopes to look into.
+     * @param solution The solution to query.
+     * @return A set of occurrences.
+     */
+    private Set<Occurrence> getOccurrencesInScopes(Iterable<Scope> scopes, ISolution solution) {
+        HashSet<Occurrence> occurrences = Sets.newHashSet();
+        for (Scope scope : scopes) {
+            Set<Occurrence> scopeOccurrences = solution.nameResolution().visible(scope).orElse(Collections.emptySet());
+            occurrences.addAll(scopeOccurrences);
+        }
+        return occurrences;
     }
 
     private Collection<? extends ICompletion> recursiveCompletions(Iterable<IStrategoTerm> leftRecursive,
@@ -372,70 +592,93 @@ public class JSGLRCompletionService implements ISpoofaxCompletionService {
     }
 
     public Collection<ICompletion> placeholderCompletions(IStrategoAppl placeholder, String languageName,
-        ILanguageComponent component, FileObject location) throws MetaborgException {
+        ILanguageComponent component, FileObject location, @Nullable ISpoofaxAnalyzeUnit analysisResult) throws MetaborgException {
         Collection<ICompletion> completions = Lists.newLinkedList();
+
 
         // call Stratego part of the framework to compute change
         final HybridInterpreter runtime = strategoRuntimeService.runtime(component, location, false);
         final ITermFactory termFactory = termFactoryService.get(component, null, false);
 
+        final IStrategoTerm proposalsPlaceholder = strGetPlaceholderCompletions(placeholder, languageName, component, location, runtime, termFactory);
+
+        if(proposalsPlaceholder != null) {
+
+            // Syntactic completions
+            for (IStrategoTerm proposalTerm : proposalsPlaceholder) {
+                if (!(proposalTerm instanceof IStrategoTuple)) {
+                    logger.error("Unexpected proposal term {}, skipping", proposalTerm);
+                    continue;
+                }
+                final IStrategoTuple tuple = (IStrategoTuple)proposalTerm;
+                if (tuple.getSubtermCount() != 4 || !(tuple.getSubterm(0) instanceof IStrategoString)
+                        || !(tuple.getSubterm(1) instanceof IStrategoString)
+                        || !(tuple.getSubterm(2) instanceof IStrategoString)
+                        || !(tuple.getSubterm(3) instanceof IStrategoAppl)) {
+                    logger.error("Unexpected proposal term {}, skipping", proposalTerm);
+                    continue;
+                }
+
+                final String name = Tools.asJavaString(tuple.getSubterm(0));
+                final String text = Tools.asJavaString(tuple.getSubterm(1));
+                final String additionalInfo = Tools.asJavaString(tuple.getSubterm(2));
+                final StrategoAppl change = (StrategoAppl)tuple.getSubterm(3);
+
+                if (change.getConstructor().getName().contains("REPLACE_TERM")) {
+                    final ICompletion completion =
+                            createCompletionReplaceTerm(name, text, additionalInfo, change, false, "", "");
+
+                    if (completion == null) {
+                        logger.error("Unexpected proposal term {}, skipping", proposalTerm);
+                        continue;
+                    }
+
+                    completions.add(completion);
+                }
+            }
+
+            // Semantic completions
+            if (analysisResult != null && analysisResult.context() instanceof IConstraintContext) {
+                completions.addAll(semanticPlaceholderCompletions(placeholder, proposalsPlaceholder, (IConstraintContext)analysisResult.context(), termFactory));
+            }
+        }
+
+        return completions;
+    }
+
+    private IStrategoTerm strGetPlaceholderCompletions(
+            IStrategoAppl placeholder,
+            String languageName,
+            ILanguageComponent component,
+            FileObject location,
+            HybridInterpreter runtime,
+            ITermFactory termFactory)
+            throws MetaborgException {
+
         IStrategoTerm placeholderParent = ParentAttachment.getParent(placeholder);
-        if(placeholderParent == null) {
+        if (placeholderParent == null) {
             placeholderParent = placeholder;
         }
 
         IStrategoInt placeholderIdx = termFactory.makeInt(-1);
 
-        for(int i = 0; i < placeholderParent.getSubtermCount(); i++) {
-            if(placeholderParent.getSubterm(i) == placeholder) {
+        for (int i = 0; i < placeholderParent.getSubtermCount(); i++) {
+            if (placeholderParent.getSubterm(i) == placeholder) {
                 placeholderIdx = termFactory.makeInt(i);
             }
         }
 
         final String sort = ImploderAttachment.getSort(placeholder);
         final IStrategoTerm strategoInput =
-            termFactory.makeTuple(termFactory.makeString(sort), placeholder, placeholderParent, placeholderIdx);
+                termFactory.makeTuple(termFactory.makeString(sort), placeholder, placeholderParent, placeholderIdx);
 
         final IStrategoTerm proposalsPlaceholder =
-            strategoCommon.invoke(runtime, strategoInput, "get-proposals-placeholder-" + languageName);
+                strategoCommon.invoke(runtime, strategoInput, "get-proposals-placeholder-" + languageName);
 
-        if(proposalsPlaceholder == null) {
+        if (proposalsPlaceholder == null) {
             logger.error("Getting proposals for {} failed", placeholder);
-            return completions;
         }
-        for(IStrategoTerm proposalTerm : proposalsPlaceholder) {
-            if(!(proposalTerm instanceof IStrategoTuple)) {
-                logger.error("Unexpected proposal term {}, skipping", proposalTerm);
-                continue;
-            }
-            final IStrategoTuple tuple = (IStrategoTuple) proposalTerm;
-            if(tuple.getSubtermCount() != 4 || !(tuple.getSubterm(0) instanceof IStrategoString)
-                || !(tuple.getSubterm(1) instanceof IStrategoString)
-                || !(tuple.getSubterm(2) instanceof IStrategoString)
-                || !(tuple.getSubterm(3) instanceof IStrategoAppl)) {
-                logger.error("Unexpected proposal term {}, skipping", proposalTerm);
-                continue;
-            }
-
-            final String name = Tools.asJavaString(tuple.getSubterm(0));
-            final String text = Tools.asJavaString(tuple.getSubterm(1));
-            final String additionalInfo = Tools.asJavaString(tuple.getSubterm(2));
-            final StrategoAppl change = (StrategoAppl) tuple.getSubterm(3);
-
-            if(change.getConstructor().getName().contains("REPLACE_TERM")) {
-                final ICompletion completion =
-                    createCompletionReplaceTerm(name, text, additionalInfo, change, false, "", "");
-
-                if(completion == null) {
-                    logger.error("Unexpected proposal term {}, skipping", proposalTerm);
-                    continue;
-                }
-
-                completions.add(completion);
-            }
-        }
-
-        return completions;
+        return proposalsPlaceholder;
     }
 
     public Collection<ICompletion> optionalCompletions(Iterable<IStrategoTerm> optionals, boolean blankLineCompletion,
@@ -859,10 +1102,12 @@ public class JSGLRCompletionService implements ISpoofaxCompletionService {
                     continue;
                 }
                 final IStrategoTuple tuple = (IStrategoTuple) proposalTerm;
-                if(tuple.getSubtermCount() != 6 || !(tuple.getSubterm(0) instanceof IStrategoString)
+                if(tuple.getSubtermCount() != 6
+                    || !(tuple.getSubterm(0) instanceof IStrategoString)
                     || !(tuple.getSubterm(1) instanceof IStrategoString)
                     || !(tuple.getSubterm(2) instanceof IStrategoString)
-                    || !(tuple.getSubterm(3) instanceof IStrategoAppl) || (tuple.getSubterm(4) == null)
+                    || !(tuple.getSubterm(3) instanceof IStrategoAppl)
+                    || (tuple.getSubterm(4) == null)
                     || !(tuple.getSubterm(5) instanceof IStrategoString)) {
                     logger.error("Unexpected proposal term {}, skipping", proposalTerm);
                     continue;

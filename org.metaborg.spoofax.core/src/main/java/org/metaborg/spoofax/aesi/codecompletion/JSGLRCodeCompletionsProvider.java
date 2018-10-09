@@ -81,9 +81,9 @@ public class JSGLRCodeCompletionsProvider implements ICodeCompletionsProvider {
      */
     private ScopeNames getScopeNames(CompletionKind kind) {
         switch (kind) {
-            case recovery: return new ScopeNames("recovery.spoofax");
-            case expansion: return new ScopeNames("expansion.spoofax");
-            case expansionEditing: return new ScopeNames("expansion.editing.spoofax");
+            case recovery: return new ScopeNames(SpoofaxScopeNames.RECOVERY);
+            case expansion: return new ScopeNames(SpoofaxScopeNames.EXPANSION);
+            case expansionEditing: return new ScopeNames(SpoofaxScopeNames.EXPANSION_EDITING);
             default: return new ScopeNames();
         }
     }
