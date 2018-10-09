@@ -6,7 +6,6 @@ import org.metaborg.core.analysis.IAnalysisService;
 import org.metaborg.core.analysis.IAnalyzer;
 import org.metaborg.core.build.IBuildOutputInternal;
 import org.metaborg.core.build.IBuilder;
-import org.metaborg.core.completion.ICompletionService;
 import org.metaborg.core.config.IProjectConfigBuilder;
 import org.metaborg.core.config.IProjectConfigService;
 import org.metaborg.core.config.IProjectConfigWriter;
@@ -662,9 +661,6 @@ public class SpoofaxModule extends MetaborgModule {
     protected void bindCompletion() {
         bind(JSGLRCompletionService.class).in(Singleton.class);
         bind(ISpoofaxCompletionService.class).to(JSGLRCompletionService.class);
-        bind(new TypeLiteral<ICompletionService<ISpoofaxParseUnit>>() {}).to(JSGLRCompletionService.class);
-        bind(new TypeLiteral<ICompletionService<?>>() {}).to(JSGLRCompletionService.class);
-        bind(ICompletionService.class).to(JSGLRCompletionService.class);
     }
 
     protected void bindOutline() {

@@ -7,7 +7,6 @@ import org.metaborg.core.analysis.IAnalysisService;
 import org.metaborg.core.analysis.IAnalyzeUnit;
 import org.metaborg.core.analysis.IAnalyzeUnitUpdate;
 import org.metaborg.core.build.IBuilder;
-import org.metaborg.core.completion.ICompletionService;
 import org.metaborg.core.language.dialect.IDialectIdentifier;
 import org.metaborg.core.language.dialect.IDialectService;
 import org.metaborg.core.menu.IMenuService;
@@ -86,7 +85,6 @@ public class MetaBorgGeneric<I extends IInputUnit, P extends IParseUnit, A exten
     public final IHoverService<P, A> hoverService;
     public final IResolverService<P, A> resolverService;
     public final IOutlineService<P, A> outlineService;
-    public final ICompletionService<P> completionService;
 
 
 
@@ -141,7 +139,6 @@ public class MetaBorgGeneric<I extends IInputUnit, P extends IParseUnit, A exten
         this.hoverService = instance(new TypeLiteral<IHoverService<P, A>>() {}, pClass, aClass);
         this.resolverService = instance(new TypeLiteral<IResolverService<P, A>>() {}, pClass, aClass);
         this.outlineService = instance(new TypeLiteral<IOutlineService<P, A>>() {}, pClass, aClass);
-        this.completionService = instance(new TypeLiteral<ICompletionService<P>>() {}, pClass);
     }
 
     /**
