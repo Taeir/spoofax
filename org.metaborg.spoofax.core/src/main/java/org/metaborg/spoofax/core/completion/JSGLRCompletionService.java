@@ -31,6 +31,7 @@ import org.metaborg.core.source.ISourceLocation;
 import org.metaborg.core.source.ISourceRegion;
 import org.metaborg.core.source.SourceLocation;
 import org.metaborg.core.source.SourceRegion;
+import org.metaborg.core.syntax.ParseException;
 import org.metaborg.spoofax.core.context.constraint.IConstraintContext;
 import org.metaborg.spoofax.core.stratego.IStrategoCommon;
 import org.metaborg.spoofax.core.stratego.IStrategoRuntimeService;
@@ -40,10 +41,7 @@ import org.metaborg.spoofax.core.syntax.JSGLRSourceRegionFactory;
 import org.metaborg.spoofax.core.syntax.SourceAttachment;
 import org.metaborg.spoofax.core.syntax.SyntaxFacet;
 import org.metaborg.spoofax.core.terms.ITermFactoryService;
-import org.metaborg.spoofax.core.unit.ISpoofaxAnalyzeUnit;
-import org.metaborg.spoofax.core.unit.ISpoofaxInputUnit;
-import org.metaborg.spoofax.core.unit.ISpoofaxParseUnit;
-import org.metaborg.spoofax.core.unit.ISpoofaxUnitService;
+import org.metaborg.spoofax.core.unit.*;
 import org.metaborg.util.functions.Function1;
 import org.metaborg.util.iterators.Iterables2;
 import org.metaborg.util.task.NullCancel;
@@ -265,7 +263,7 @@ public class JSGLRCompletionService implements ISpoofaxCompletionService {
 
             if(placeholder != null) {
                 @Nullable IStrategoTerm placeholderParent = getParentTermOf(placeholder, terms);
-                completions.addAll(placeholderCompletions(placeholder, placeholderParent, languageName, component, location, analysisResult));
+                completions.addAll(placeholderCompletions(placeholder, placeholderParent, languageName, component, language, location, analysisResult));
             } else {
                 if(Iterables.size(lists) != 0) {
                     completions.addAll(
@@ -295,7 +293,7 @@ public class JSGLRCompletionService implements ISpoofaxCompletionService {
      * @param termFactory
      * @return
      */
-    private Collection<ICompletion> semanticPlaceholderCompletions(IStrategoAppl placeholder, IStrategoTerm syntacticProposals, IConstraintContext context, ITermFactory termFactory, HybridInterpreter runtime) {
+    private Collection<ICompletion> semanticPlaceholderCompletions(IStrategoAppl placeholder, IStrategoTerm syntacticProposals, IConstraintContext context, ITermFactory termFactory, HybridInterpreter runtime, ILanguageImpl language) {
         Collection<ICompletion> proposals = new ArrayList<>();
 
         // From the placeholder, the most specific element:
@@ -343,7 +341,7 @@ public class JSGLRCompletionService implements ISpoofaxCompletionService {
 
             if (change.getConstructor().getName().contains("REPLACE_TERM")) {
                 IStrategoTerm syntaxFragment = change.getSubterm(1);
-                List<ICompletion> fragmentProposals = findSemanticCompletionsForFragment(name, text, additionalInfo, change, syntaxFragment, args, type, fresh, result, occurrences, strategoTerms, solver, termFactory, runtime);
+                List<ICompletion> fragmentProposals = findSemanticCompletionsForFragment(name, text, additionalInfo, change, syntaxFragment, args, type, fresh, result, occurrences, strategoTerms, solver, termFactory, runtime, language);
                 proposals.addAll(fragmentProposals);
             }
         }
@@ -389,7 +387,7 @@ public class JSGLRCompletionService implements ISpoofaxCompletionService {
      * @param factory The term factory.
      * @return The completion proposals.
      */
-    private List<ICompletion> findSemanticCompletionsForFragment(String name, String text, String additionalInfo, StrategoAppl change, IStrategoTerm syntaxFragment, ITerm params, @Nullable ITerm type, Function1<String, String> fresh, IResult result, Set<Occurrence> occurrences, StrategoTerms strategoTerms, CompletionSolver solver, ITermFactory factory, HybridInterpreter runtime) {
+    private List<ICompletion> findSemanticCompletionsForFragment(String name, String text, String additionalInfo, StrategoAppl change, IStrategoTerm syntaxFragment, ITerm params, @Nullable ITerm type, Function1<String, String> fresh, IResult result, Set<Occurrence> occurrences, StrategoTerms strategoTerms, CompletionSolver solver, ITermFactory factory, HybridInterpreter runtime, ILanguageImpl language) {
         ArrayList<ICompletion> proposals = Lists.newArrayList();
         for (Occurrence occurrence : occurrences) {
             // Get the name of the occurrence.
@@ -404,6 +402,7 @@ public class JSGLRCompletionService implements ISpoofaxCompletionService {
 
             // Build the fragment.
             IStrategoTerm fragment = buildFragment(syntaxFragment, occurrenceName, placeholderIndex, factory);
+//            IStrategoTerm fragment = buildFragment2(text, placeholder, occurrenceName, language);
             if (fragment == null) continue;
 
             boolean isValid = isSemanticallyValidFragment(fragment, params, type, result, fresh, strategoTerms, solver, factory, runtime);
@@ -425,6 +424,14 @@ public class JSGLRCompletionService implements ISpoofaxCompletionService {
      * @return The zero-based index of the subterm; or -1 when no placeholder was found.
      */
     private int getFirstPlaceholderIndexInTerm(IStrategoTerm term) {
+        // TODO: Return only the first placeholder that:
+        // 1. Is of a lexical sort (e.g. lexical syntax: ID); or
+        // 2. Is directly rewritable to a lexical sort (e.g. context-free syntax: Occ = ID).
+        // Also, the placeholder should be able to parse the name validly. For example, `ab2cd` is not a valid ID
+        // when IDs cannot contain digits, so we must not try it.
+        // In other words: we want to prevent us from producing a fragment of an invalid AST.
+        // Alternatively, we create the string and parse it as an AST fragment, but this has a big overhead.
+
         IStrategoTerm[] subterms = term.getAllSubterms();
         for (int i = 0; i < subterms.length; i++) {
             if (isPlaceholderTerm(subterms[i])) {
@@ -455,8 +462,43 @@ public class JSGLRCompletionService implements ISpoofaxCompletionService {
         return factory.replaceAppl(fragmentAppl.getConstructor(), subterms, fragmentAppl);
     }
 
+    @Nullable private IStrategoTerm buildFragment2(String originalFragment, IStrategoAppl placeholder, String occurrenceName, ILanguageImpl language) {
+        String sort = placeholder.getConstructor().getName();
+        sort = sort.substring(0, sort.length() - PLACEHOLDER_SORT_SUFFIX.length());
+        String placeholderName = "$" + sort;
+
+        String newFragment = replaceOnce(originalFragment, placeholderName, occurrenceName);
+        return tryParseFragment(newFragment, sort, language);
+    }
+
     /**
-     * Determines whether the specified fragment is semantivally valid.
+     * Attempts to parse the given fragment.
+     *
+     * @param fragment The fragment.
+     * @param sort The sort of the fragment (i.e. the parser start symbol).
+     * @param language The language of the fragment.
+     * @return The fragment AST; or null when parsing failed.
+     */
+    @Nullable private IStrategoTerm tryParseFragment(String fragment, String sort, ILanguageImpl language) {
+        int timeout = 0;//JSGLRParserConfiguration.defaultTimeout;
+        final JSGLRParserConfiguration config = new JSGLRParserConfiguration(true, false, false,
+                timeout, JSGLRParserConfiguration.defaultCursorPosition, sort);
+        final ISpoofaxInputUnit input = unitService.inputUnit(fragment, language, null, config);
+        final ISpoofaxParseUnit parseResult;
+        try {
+            parseResult = syntaxService.parse(input);
+        } catch (ParseException e) {
+            logger.error("Unexpected parse exception while finding completions.", e);
+            return null;
+        }
+
+        if (!parseResult.success()) return null;
+
+        return parseResult.ast();
+    }
+
+    /**
+     * Determines whether the specified fragment is semantically valid.
      *
      * @param fragment The fragment to test.
      * @param result The original analysis result.
@@ -683,7 +725,7 @@ public class JSGLRCompletionService implements ISpoofaxCompletionService {
     }
 
     public Collection<ICompletion> placeholderCompletions(IStrategoAppl placeholder, @Nullable IStrategoTerm placeholderParent, String languageName,
-        ILanguageComponent component, FileObject location, @Nullable ISpoofaxAnalyzeUnit analysisResult) throws MetaborgException {
+        ILanguageComponent component, ILanguageImpl language, FileObject location, @Nullable ISpoofaxAnalyzeUnit analysisResult) throws MetaborgException {
         Collection<ICompletion> completions = Lists.newLinkedList();
 
 
@@ -730,7 +772,7 @@ public class JSGLRCompletionService implements ISpoofaxCompletionService {
 
             // Semantic completions
             if (analysisResult != null && analysisResult.context() instanceof IConstraintContext) {
-                completions.addAll(semanticPlaceholderCompletions(placeholder, proposalsPlaceholder, (IConstraintContext)analysisResult.context(), termFactory, runtime));
+                completions.addAll(semanticPlaceholderCompletions(placeholder, proposalsPlaceholder, (IConstraintContext)analysisResult.context(), termFactory, runtime, language));
             }
         }
 
