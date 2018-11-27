@@ -1,6 +1,7 @@
 package org.metaborg.spoofax.core.completion;
 
 import java.util.*;
+import java.util.stream.Collectors;
 
 import javax.annotation.Nullable;
 
@@ -347,7 +348,7 @@ public class JSGLRCompletionService implements ISpoofaxCompletionService {
                 boolean isValid = isSemanticallyValidFragment(syntaxFragment, params, type, result, fresh, strategoTerms, solver, termFactory, runtime);
                 if (isValid) {
                     // Build a completion from it.
-                    final ICompletion proposal = createCompletionReplaceTerm(name, text, additionalInfo, change, false, "", "");
+                    final ICompletion proposal = createCompletionReplaceTerm("+ "+ name, text, additionalInfo, change, false, "", "");
                     proposals.add(proposal);
                 }
 
@@ -569,7 +570,7 @@ public class JSGLRCompletionService implements ISpoofaxCompletionService {
         } catch (SolverException | InterruptedException e) {
             throw new RuntimeException(e);
         }
-
+        
         // If the solution does not contain any new errors,
         // the fragment is semantically and syntactically valid and can be suggested as a completion
         return newSolution.messages().getErrors().isEmpty();
@@ -585,6 +586,10 @@ public class JSGLRCompletionService implements ISpoofaxCompletionService {
         // When a constraint is added to U2 (unit 2) in this situation,
         // then F is not recomputed with the new constraint. It is possible that the new constraint
         // changes the final whole-program analysis.
+    }
+    
+    private Object pp(ISolution newSolution) {
+    	return newSolution.constraints().stream().map(c -> c.pp().toString(newSolution.unifier()::toString)).collect(Collectors.toList());
     }
 
     /**
