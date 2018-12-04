@@ -348,7 +348,7 @@ public class JSGLRCompletionService implements ISpoofaxCompletionService {
                 boolean isValid = isSemanticallyValidFragment(syntaxFragment, params, type, result, fresh, strategoTerms, solver, termFactory, runtime);
                 if (isValid) {
                     // Build a completion from it.
-                    final ICompletion proposal = createCompletionReplaceTerm("+ "+ name, text, additionalInfo, change, false, "", "");
+                    final ICompletion proposal = createCompletionReplaceTerm(name, text, additionalInfo, change, false, "", "");
                     proposals.add(proposal);
                 }
 
@@ -673,7 +673,8 @@ public class JSGLRCompletionService implements ISpoofaxCompletionService {
                         continue;
                     }
 
-                    completions.add(completion);
+                    // Only syntactic completions
+                    //completions.add(completion);
                 }
             }
 
@@ -994,7 +995,7 @@ public class JSGLRCompletionService implements ISpoofaxCompletionService {
             kind = CompletionKind.expansionEditing;
         }
 
-        return new Completion(name, sort, text, additionalInfo, insertionPoint + 1, suffixPoint, kind, prefix, suffix);
+        return new Completion(name.toLowerCase(), sort, text, additionalInfo, insertionPoint + 1, suffixPoint, kind, prefix, suffix);
     }
 
     private ICompletion createCompletionInsertBefore(String name, String text, String additionalInfo,
