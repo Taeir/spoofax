@@ -474,6 +474,15 @@ public class SpoofaxModule extends MetaborgModule {
 
         final Multibinder<AbstractPrimitive> statixLibrary =
             Multibinder.newSetBinder(binder(), AbstractPrimitive.class, Names.named(StatixLibrary.name));
+        bindPrimitive(statixLibrary, MSTX_end_phase.class);
+        bindPrimitive(statixLibrary, MSTX_end_run.class);
+        bindPrimitive(statixLibrary, MSTX_fix_run.class);
+        bindPrimitive(statixLibrary, MSTX_scope_graph.class);
+        bindPrimitive(statixLibrary, MSTX_solve_constraint.class);
+        bindPrimitive(statixLibrary, MSTX_solve_multi_file.class);
+        bindPrimitive(statixLibrary, MSTX_solve_multi_project.class);
+        bindPrimitive(statixLibrary, MSTX_start_phase.class);
+        bindPrimitive(statixLibrary, MSTX_start_run.class);
         bindPrimitive(statixLibrary, STX_analysis_has_errors.class);
         bindPrimitive(statixLibrary, STX_compare_patterns.class);
         bindPrimitive(statixLibrary, STX_delays_as_errors.class);
