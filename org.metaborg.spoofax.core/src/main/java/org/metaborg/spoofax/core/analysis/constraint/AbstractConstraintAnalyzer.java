@@ -133,8 +133,8 @@ public abstract class AbstractConstraintAnalyzer implements ISpoofaxAnalyzer {
             }
             final String source = context.resourceKey(input.source());
             if (!input.valid() || !input.success()) continue;
-
-            if(!isEmptyAST(input.ast())) {
+            
+			if(!isEmptyAST(input.ast())) {
                 changed.put(source, input);
             } else {
                 removed.put(source, unitService.emptyAnalyzeUnit(input, context));
